@@ -1,0 +1,128 @@
+#!/bin/bash
+#
+# Nautilus Script: Create Desktop Launcher
+#
+# INSTALL:
+#   1. Requires 'yad' (a GTK dialog tool, superset of zenity):
+#        sudo apt install yad
+#   2. Copy this file to:
+#        ~/.local/share/nautilus/scripts/Create Desktop Launcher
+#   3. Make it executable:
+#        chmod +x ~/.local/share/nautilus/scripts/Create\ Desktop\ Launcher
+#   4. Right-click a file (e.g. an AppImage or binary) in Nautilus,
+#      or right-click empty space in a folder, and choose
+#      Scripts > Create Desktop Launcher
+#
+# WHAT IT DOES:
+#   Shows a GTK form (Name, Icon, Exec command) then an "Advanced"
+#   form (Comment, Categories, Terminal, StartupWMClass), then writes
+#   a .desktop file to ~/.local/share/applications/ and chmods it +x.
+
+set -euo pipefail
+
+APP_DIR="$HOME/.local/share/applications"
+mkdir -p "$APP_DIR"
+
+# --- Figure out a sensible default Exec path -------------------------------
+# If invoked on a selected file, pre-fill Exec with its path.
+# If invoked on empty space, NAUTILUS_SCRIPT_SELECTED_FILE_PATHS is empty.
+DEFAULT_EXEC=""
+if [ -n "${NAUTILUS_SCRIPT_SELECTED_FILE_PATHS:-}" ]; then
+    FIRST_FILE="$(printf '%s\n' "$NAUTILUS_SCRIPT_SELECTED_FILE_PATHS" | head -n1)"
+    if [ -n "$FIRST_FILE" ]; then
+        DEFAULT_EXEC="$FIRST_FILE"
+    fi
+fi
+
+# --- Basic form: Name, Exec, Icon ------------------------------------------
+# yad field types used:
+#   :     -> plain text entry
+#   CFL   -> file chooser combo (lets you type OR browse)
+#   FL    -> file chooser button (opens a full file-manager-style picker)
+# --file-filter restricts the FL field's picker to common icon image types.
+BASIC_VALUES=$(yad --form \
+    --title="Create Desktop Launcher" \
+    --width=420 \
+    --text="Basic application info" \
+    --field="Application Name:" "" \
+    --field="Command to run (Exec):CFL" "$DEFAULT_EXEC" \
+    --field="Icon:FL" "" \
+    --file-filter="Images | *.png *.svg *.svgz *.xpm *.jpg *.jpeg" \
+    --button="Next (Advanced)!gtk-go-forward:0" \
+    --button="Cancel!gtk-cancel:1")
+
+RET=$?
+if [ "$RET" -ne 0 ] || [ -z "$BASIC_VALUES" ]; then
+    exit 0
+fi
+
+# yad separates form fields with '|'
+IFS='|' read -r APP_NAME APP_EXEC APP_ICON <<< "$BASIC_VALUES"
+
+if [ -z "$APP_NAME" ] || [ -z "$APP_EXEC" ]; then
+    yad --error --text="Name and Exec command are required." --width=300
+    exit 1
+fi
+
+if [ -z "$APP_ICON" ]; then
+    APP_ICON="application-x-executable"
+fi
+
+# --- Advanced form: Comment, Categories, Terminal, StartupWMClass ----------
+ADV_VALUES=$(yad --form \
+    --title="Create Desktop Launcher - Advanced" \
+    --width=420 \
+    --text="Advanced options (optional)" \
+    --field="Comment:" "" \
+    --field="Categories (e.g. Utility;Development;):" "Utility;" \
+    --field="Run in terminal:CHK" "FALSE" \
+    --field="StartupWMClass (window class match):" "" \
+    --button="Create!gtk-ok:0" \
+    --button="Back/Cancel!gtk-cancel:1")
+
+RET=$?
+if [ "$RET" -ne 0 ] || [ -z "$ADV_VALUES" ]; then
+    exit 0
+fi
+
+IFS='|' read -r APP_COMMENT APP_CATEGORIES APP_TERMINAL APP_WMCLASS <<< "$ADV_VALUES"
+
+# Normalize the checkbox value to true/false for the .desktop spec
+if [ "$APP_TERMINAL" = "TRUE" ]; then
+    TERMINAL_VAL="true"
+else
+    TERMINAL_VAL="false"
+fi
+
+# --- Build a safe filename ---------------------------------------------------
+SAFE_NAME=$(echo "$APP_NAME" | tr -c '[:alnum:]-' '_' | sed 's/_\+/_/g; s/^_//; s/_$//')
+DESKTOP_FILE="$APP_DIR/${SAFE_NAME}.desktop"
+
+if [ -e "$DESKTOP_FILE" ]; then
+    yad --question --text="${SAFE_NAME}.desktop already exists.\nOverwrite it?" --width=320
+    if [ $? -ne 0 ]; then
+        exit 0
+    fi
+fi
+
+# --- Write the .desktop file -------------------------------------------------
+{
+    echo "[Desktop Entry]"
+    echo "Type=Application"
+    echo "Name=${APP_NAME}"
+    [ -n "$APP_COMMENT" ] && echo "Comment=${APP_COMMENT}"
+    echo "Exec=${APP_EXEC}"
+    echo "Icon=${APP_ICON}"
+    echo "Terminal=${TERMINAL_VAL}"
+    [ -n "$APP_CATEGORIES" ] && echo "Categories=${APP_CATEGORIES}"
+    [ -n "$APP_WMCLASS" ] && echo "StartupWMClass=${APP_WMCLASS}"
+} > "$DESKTOP_FILE"
+
+chmod +x "$DESKTOP_FILE"
+
+# Refresh the desktop database if the tool is available (harmless if not)
+if command -v update-desktop-database >/dev/null 2>&1; then
+    update-desktop-database "$APP_DIR" >/dev/null 2>&1 || true
+fi
+
+yad --info --text="Created launcher:\n${DESKTOP_FILE}" --width=380
